@@ -7,10 +7,13 @@ import {
   Trash2, 
   Cpu, 
   BarChart3, 
-  Clock, 
   AlertTriangle,
   ChevronRight,
-  Activity
+  Activity,
+  DollarSign,
+  Zap,
+  ArrowUpRight,
+  ArrowDownRight
 } from 'lucide-react';
 
 const API_KEY_STOCK = "GNYJ6HBVJV6Z8TVS";
@@ -20,12 +23,13 @@ const App = () => {
   const [ticker, setTicker] = useState('NVDA');
   const [searchQuery, setSearchQuery] = useState('');
   const [watchlist, setWatchlist] = useState(['AAPL', 'TSLA', 'NVDA', 'MSFT', 'META']);
-  const [timeframe, setTimeframe] = useState({ id: '1D', func: 'TIME_SERIES_INTRADAY', interval: '5min', label: '1D' });
+  const [timeframe, setTimeframe] = useState({ id: '1D', func: 'TIME_SERIES_INTRADAY', interval: '5min' });
   const [stats, setStats] = useState({ price: "0.00", change: "0.00", pct: "0.00", high: "0.00", low: "0.00", volume: "0" });
   const [aiAnalysis, setAiAnalysis] = useState(null);
   const [loading, setLoading] = useState(false);
   const [isSimulated, setIsSimulated] = useState(false);
   const [libReady, setLibReady] = useState(false);
+  const [portfolio, setPortfolio] = useState({ balance: 50000, shares: 0 });
 
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -36,11 +40,7 @@ const App = () => {
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      try {
-        setWatchlist(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to parse watchlist", e);
-      }
+      try { setWatchlist(JSON.parse(saved)); } catch (e) { console.error(e); }
     }
   }, []);
 
@@ -54,41 +54,35 @@ const App = () => {
     }
   };
 
-  const removeFromWatchlist = (symbol, e) => {
-    e.stopPropagation();
-    const newList = watchlist.filter(s => s !== symbol);
-    setWatchlist(newList);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
-  };
+  // --- Enhanced Recommendation Engine ---
+  const generateAIRecommendation = (symbol, data) => {
+    if (!data || data.length < 20) return;
+    
+    const prices = data.map(d => d.close);
+    const lastPrice = prices[prices.length - 1];
+    const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+    const rsi = 50 + (Math.random() * 20 - 10); // Simulated RSI logic
 
-  // --- AI Analysis Logic ---
-  const generateAIRecommendation = (symbol, currentPrice, data) => {
-    if (!data || data.length < 10) return;
-    
-    const last = data[data.length - 1].close;
-    const prev = data[data.length - 10]?.close || data[0].close;
-    const momentum = ((last - prev) / prev) * 100;
-    
     let rec = "HOLD";
     let score = 50;
     let insight = "";
 
-    if (momentum > 1.2) {
+    if (lastPrice > avg * 1.02) {
       rec = "BUY";
-      score = Math.min(95, 70 + momentum * 2);
-      insight = `מניית ${symbol} מציגה מומנטום חיובי חזק. הפריצה מעל רמות התמיכה מעידה על פוטנציאל המשך עליות.`;
-    } else if (momentum < -1.2) {
+      score = Math.round(75 + (lastPrice / avg) * 5);
+      insight = `מניית ${symbol} נסחרת מעל הממוצע הנע. המומנטום חיובי וקיים פוטנציאל לפריצה של רמת ההתנגדות הקרובה.`;
+    } else if (lastPrice < avg * 0.98) {
       rec = "SELL";
-      score = Math.max(5, 30 + momentum * 2);
-      insight = `לחץ מכירות ב-${symbol}. האינדיקטורים מצביעים על חולשה, מומלץ להמתין להתייצבות.`;
+      score = Math.round(25 - (avg / lastPrice) * 5);
+      insight = `זוהתה שבירה של רמת תמיכה ב-${symbol}. האינדיקטורים הטכניים מצביעים על לחץ מכירות מוגבר.`;
     } else {
-      insight = `המניה נסחרת בטווח דשדוש. אין כיוון ברור כרגע, מומלץ להמתין לפריצה.`;
+      insight = `המניה נסחרת בטווח יציב (Consolidation). מומלץ להמתין לאות ברור יותר לפני כניסה לעסקה.`;
     }
 
-    setAiAnalysis({ rec, score: Math.round(score), insight });
+    setAiAnalysis({ rec, score: Math.max(0, Math.min(100, score)), insight });
   };
 
-  // --- Data Fetching ---
+  // --- Live Data Fetching ---
   const fetchData = useCallback(async (symbol, tf) => {
     const callKey = `${symbol}-${tf.id}`;
     if (lastCallRef.current === callKey) return;
@@ -111,7 +105,10 @@ const App = () => {
 
       const seriesData = data[keyMap[tf.id]];
       
-      if (!seriesData) throw new Error("API Limit");
+      if (!seriesData) {
+        if (data["Note"]) throw new Error("API_LIMIT");
+        throw new Error("NO_DATA");
+      }
 
       const formatted = Object.entries(seriesData).map(([time, v]) => ({
         time: tf.id === '1D' ? Math.floor(new Date(time).getTime() / 1000) : time,
@@ -130,237 +127,192 @@ const App = () => {
         pct: (((latest.close - prev.close) / prev.close) * 100).toFixed(2),
         high: latest.high.toFixed(2),
         low: latest.low.toFixed(2),
-        volume: parseInt(seriesData[Object.keys(seriesData)[0]]["5. volume"]).toLocaleString()
+        volume: parseInt(seriesData[Object.keys(seriesData)[0]]["5. volume"] || "0").toLocaleString()
       });
 
-      if (seriesRef.current) {
-        seriesRef.current.setData(formatted);
-      }
-      generateAIRecommendation(symbol, latest.close, formatted);
+      if (seriesRef.current) seriesRef.current.setData(formatted);
+      generateAIRecommendation(symbol, formatted);
       setIsSimulated(false);
     } catch (err) {
+      console.warn("Falling back to simulation mode due to API constraints");
       const mock = [];
       let base = 150 + Math.random() * 50;
       const now = Math.floor(Date.now() / 1000);
       for(let i=0; i<100; i++) {
         const o = base + (Math.random() - 0.5) * 2;
         const c = o + (Math.random() - 0.5) * 3;
-        const timeValue = tf.id === '1D' 
-          ? now - (100 - i) * 300 
-          : new Date(Date.now() - (100 - i) * 86400000).toISOString().split('T')[0];
-        
         mock.push({
-          time: timeValue,
+          time: tf.id === '1D' ? now - (100 - i) * 300 : new Date(Date.now() - (100 - i) * 86400000).toISOString().split('T')[0],
           open: o, high: Math.max(o, c) + 0.5, low: Math.min(o, c) - 0.5, close: c
         });
         base = c;
       }
-      if (seriesRef.current) {
-        seriesRef.current.setData(mock);
-      }
-      setStats({ price: base.toFixed(2), change: "1.20", pct: "0.85", high: (base+2).toFixed(2), low: (base-2).toFixed(2), volume: "1.2M" });
-      generateAIRecommendation(symbol, base, mock);
+      if (seriesRef.current) seriesRef.current.setData(mock);
+      setStats({ price: base.toFixed(2), change: "1.45", pct: "0.92", high: (base+3).toFixed(2), low: (base-3).toFixed(2), volume: "850K" });
+      generateAIRecommendation(symbol, mock);
       setIsSimulated(true);
     } finally {
       setLoading(false);
-      if (chartRef.current) {
-        chartRef.current.timeScale().fitContent();
-      }
+      if (chartRef.current) chartRef.current.timeScale().fitContent();
     }
   }, []);
 
-  // --- Robust Library Initialization ---
+  // --- Script Loader ---
   useEffect(() => {
-    const scriptId = 'lw-charts-script';
-    if (!document.getElementById(scriptId)) {
-      const script = document.createElement('script');
-      script.id = scriptId;
-      script.src = 'https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js';
-      script.async = true;
-      script.onload = () => setLibReady(true);
-      document.head.appendChild(script);
-    } else if (window.LightweightCharts) {
-      setLibReady(true);
-    }
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js';
+    script.async = true;
+    script.onload = () => setLibReady(true);
+    document.head.appendChild(script);
   }, []);
 
   // --- Chart Lifecycle ---
   useEffect(() => {
     if (!libReady || !chartContainerRef.current) return;
-
     const LWCharts = window.LightweightCharts;
-    if (!LWCharts || typeof LWCharts.createChart !== 'function') {
-      const timer = setTimeout(() => setLibReady(false), 500); // Retry logic
-      return () => clearTimeout(timer);
-    }
+    if (!LWCharts) return;
 
     const container = chartContainerRef.current;
-    
-    // Cleanup previous chart
-    if (chartRef.current) {
-      chartRef.current.remove();
-    }
+    const chart = LWCharts.createChart(container, {
+      layout: { backgroundColor: '#05070a', textColor: '#94a3b8', fontSize: 11 },
+      grid: { vertLines: { color: '#0f172a' }, horzLines: { color: '#0f172a' } },
+      rightPriceScale: { borderColor: '#1e293b', scaleMargins: { top: 0.1, bottom: 0.2 } },
+      timeScale: { borderColor: '#1e293b', timeVisible: true },
+      width: container.clientWidth,
+      height: container.clientHeight,
+    });
 
-    try {
-      const chart = LWCharts.createChart(container, {
-        layout: { 
-          backgroundColor: '#05070a', 
-          textColor: '#d1d5db',
-          fontSize: 12 
-        },
-        grid: { 
-          vertLines: { color: '#111827' }, 
-          horzLines: { color: '#111827' } 
-        },
-        rightPriceScale: { borderColor: '#1f2937' },
-        timeScale: { borderColor: '#1f2937', timeVisible: true },
-        width: container.clientWidth,
-        height: container.clientHeight
-      });
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: '#10b981', downColor: '#ef4444', borderVisible: false, wickUpColor: '#10b981', wickDownColor: '#ef4444'
+    });
 
-      const candleSeries = chart.addCandlestickSeries({
-        upColor: '#10b981', 
-        downColor: '#ef4444', 
-        borderVisible: false, 
-        wickUpColor: '#10b981', 
-        wickDownColor: '#ef4444'
-      });
+    chartRef.current = chart;
+    seriesRef.current = candleSeries;
+    fetchData(ticker, timeframe);
 
-      chartRef.current = chart;
-      seriesRef.current = candleSeries;
-
-      fetchData(ticker, timeframe);
-
-      const handleResize = () => {
-        if (container && chartRef.current) {
-          chartRef.current.applyOptions({ 
-            width: container.clientWidth,
-            height: container.clientHeight
-          });
-        }
-      };
-
-      window.addEventListener('resize', handleResize);
-      return () => {
-        window.removeEventListener('resize', handleResize);
-        if (chartRef.current) {
-          chartRef.current.remove();
-          chartRef.current = null;
-        }
-      };
-    } catch (e) {
-      console.error("Chart initialization failed:", e);
-    }
+    const handleResize = () => chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      chart.remove();
+    };
   }, [libReady, ticker, timeframe, fetchData]);
 
   return (
-    <div className="flex flex-col h-screen bg-[#05070a] text-slate-200 font-sans select-none overflow-hidden" dir="ltr">
-      {/* Header */}
-      <header className="h-16 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a0d14] shrink-0">
-        <div className="flex items-center gap-6">
+    <div className="flex flex-col h-screen bg-[#020617] text-slate-200 font-sans select-none overflow-hidden" dir="rtl">
+      {/* Top Navigation */}
+      <header className="h-14 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a0f1e] shrink-0">
+        <div className="flex items-center gap-8">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center font-black text-white">Q</div>
-            <span className="text-xl font-bold tracking-tight text-white">QUANTA<span className="text-blue-500">PRO</span></span>
+            <div className="w-7 h-7 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-900/20">
+              <Zap size={16} className="text-white fill-current" />
+            </div>
+            <span className="text-lg font-black tracking-tighter text-white">QUANTA<span className="text-blue-500">LIVE</span></span>
           </div>
           
-          <div className="flex bg-[#111827] rounded-lg border border-white/10 p-1">
+          <nav className="flex items-center gap-1 bg-white/5 p-1 rounded-xl">
             {['1D', '1W', '1M', '1Y'].map(id => (
               <button
                 key={id}
                 onClick={() => {
-                  const configs = {
-                    '1D': { id: '1D', func: 'TIME_SERIES_INTRADAY', interval: '5min' },
-                    '1W': { id: '1W', func: 'TIME_SERIES_DAILY' },
-                    '1M': { id: '1M', func: 'TIME_SERIES_DAILY' },
-                    '1Y': { id: '1Y', func: 'TIME_SERIES_WEEKLY' }
-                  };
-                  setTimeframe(configs[id]);
+                   const tfMap = {
+                     '1D': { id: '1D', func: 'TIME_SERIES_INTRADAY', interval: '5min' },
+                     '1W': { id: '1W', func: 'TIME_SERIES_DAILY' },
+                     '1M': { id: '1M', func: 'TIME_SERIES_DAILY' },
+                     '1Y': { id: '1Y', func: 'TIME_SERIES_WEEKLY' }
+                   };
+                   setTimeframe(tfMap[id]);
                 }}
-                className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${timeframe.id === id ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}
+                className={`px-4 py-1.5 text-[10px] font-black rounded-lg transition-all ${timeframe.id === id ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-white'}`}
               >
                 {id}
               </button>
             ))}
-          </div>
+          </nav>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-6">
           <div className="relative">
-            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
-                <Search size={16} />
-            </div>
+            <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
             <input 
-              type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value.toUpperCase())}
-              onKeyDown={(e) => e.key === 'Enter' && addToWatchlist()}
-              placeholder="Search ticker..."
-              className="bg-[#111827] border border-white/10 rounded-xl pl-10 pr-10 py-2 text-sm w-64 focus:ring-2 focus:ring-blue-500 outline-none text-white text-left"
+              onChange={e => setSearchQuery(e.target.value.toUpperCase())}
+              onKeyDown={e => e.key === 'Enter' && addToWatchlist()}
+              placeholder="חפש מנייה..."
+              className="bg-white/5 border border-white/10 rounded-xl pr-10 pl-4 py-1.5 text-xs w-60 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
             />
           </div>
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold border ${isSimulated ? 'bg-amber-500/10 text-amber-500 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'}`}>
-            <Activity size={12} className="animate-pulse" />
-            {isSimulated ? 'SIMULATED' : 'LIVE'}
+          <div className="flex items-center gap-3 border-r border-white/10 pr-6 mr-2">
+             <div className="text-left">
+                <p className="text-[8px] text-slate-500 font-bold uppercase">Balance</p>
+                <p className="text-xs font-mono font-bold text-emerald-400">${portfolio.balance.toLocaleString()}</p>
+             </div>
+             <div className="w-8 h-8 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center">
+                <DollarSign size={14} />
+             </div>
           </div>
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden" dir="rtl">
-        <main className="flex-1 flex flex-col min-w-0" dir="ltr">
-          {/* Stats Bar */}
-          <div className="p-6 grid grid-cols-4 gap-4 border-b border-white/5 bg-[#0a0d14]/50" dir="rtl">
-            <div className="text-right">
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">נכס</span>
-              <div className="text-3xl font-black text-white">{ticker}</div>
-            </div>
-            <div className="text-right">
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">מחיר</span>
-              <div className="text-3xl font-mono font-bold text-white">${stats.price}</div>
-            </div>
-            <div className="text-right">
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">שינוי</span>
-              <div className={`text-3xl font-mono font-bold flex items-center justify-end gap-2 ${parseFloat(stats.change) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {parseFloat(stats.change) >= 0 ? <TrendingUp size={24} /> : <TrendingDown size={24} />}
-                {stats.pct}%
+      <div className="flex flex-1 overflow-hidden">
+        {/* Main Terminal */}
+        <main className="flex-1 flex flex-col min-w-0 bg-[#020617]">
+          {/* Price & Stats */}
+          <div className="p-6 flex items-center justify-between border-b border-white/5 bg-gradient-to-b from-[#0a0f1e] to-transparent">
+            <div className="flex items-center gap-6">
+              <div>
+                <h1 className="text-4xl font-black tracking-tighter text-white">{ticker}</h1>
+                <p className="text-[10px] text-blue-500 font-bold uppercase tracking-widest">{isSimulated ? 'Simulation Mode' : 'Market Live'}</p>
+              </div>
+              <div className="h-10 w-px bg-white/10" />
+              <div>
+                <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">מחיר נוכחי</p>
+                <p className="text-3xl font-mono font-bold text-white tracking-tighter">${stats.price}</p>
+              </div>
+              <div>
+                <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">שינוי יומי</p>
+                <div className={`text-xl font-mono font-bold flex items-center gap-1 ${parseFloat(stats.change) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {parseFloat(stats.change) >= 0 ? <ArrowUpRight size={20} /> : <ArrowDownRight size={20} />}
+                  {stats.pct}%
+                </div>
               </div>
             </div>
-            <div className="flex flex-col justify-center border-r border-white/10 pr-6 text-right">
-              <span className="text-[10px] text-slate-500 font-bold uppercase block mb-1">מחזור (Volume)</span>
-              <span className="text-sm font-bold text-slate-300">{stats.volume}</span>
+
+            <div className="flex gap-3">
+              <button className="px-8 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-sm transition-all shadow-lg shadow-emerald-900/20 active:scale-95">BUY</button>
+              <button className="px-8 py-3 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-black text-sm transition-all shadow-lg shadow-rose-900/20 active:scale-95">SELL</button>
             </div>
           </div>
 
-          {/* Chart Area */}
-          <div className="flex-1 relative bg-[#05070a] min-h-0">
+          {/* Chart Section */}
+          <div className="flex-1 relative min-h-0">
             {loading && (
-              <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#05070a]/50">
-                <div className="w-10 h-10 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#020617]/50 backdrop-blur-sm">
+                <Activity className="animate-spin text-blue-500" size={32} />
               </div>
             )}
             <div ref={chartContainerRef} className="w-full h-full" />
-
-            {/* AI Recommendation */}
-            <div className="absolute bottom-6 left-6 right-6 bg-[#0a0d14]/90 backdrop-blur-md border border-white/10 rounded-2xl p-4 flex items-center justify-between shadow-2xl z-40" dir="rtl">
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 bg-blue-600/20 rounded-lg flex items-center justify-center text-blue-500">
-                  <Cpu size={20} />
+            
+            {/* AI Insights Panel */}
+            <div className="absolute bottom-6 left-6 right-6 flex gap-4 pointer-events-none">
+              <div className="flex-1 bg-[#0a0f1e]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-4 shadow-2xl flex items-center justify-between pointer-events-auto">
+                <div className="flex items-center gap-4">
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${aiAnalysis?.rec === 'BUY' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-rose-500/20 text-rose-500'}`}>
+                    <Cpu size={24} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                       <span className="text-[10px] font-black text-blue-500 uppercase tracking-widest">AI Analyst Prediction</span>
+                       <span className="px-2 py-0.5 rounded bg-white/5 text-[9px] font-bold text-slate-400 border border-white/5">Score: {aiAnalysis?.score}/100</span>
+                    </div>
+                    <p className="text-sm font-medium text-slate-200 mt-0.5">{aiAnalysis?.insight || "מנתח נתוני שוק..."}</p>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <h4 className="text-[10px] font-bold text-blue-400 uppercase tracking-widest flex items-center gap-1">
-                    <BarChart3 size={10} /> ניתוח מערכת AI
-                  </h4>
-                  <p className="text-xs text-slate-300 max-w-xl">{aiAnalysis?.insight || "מעבד נתונים..."}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-4 pr-4 border-r border-white/10">
-                <div className="text-center">
-                  <div className="text-[10px] text-slate-500 uppercase font-bold">ציון</div>
-                  <div className="text-xl font-black text-white">{aiAnalysis?.score || '--'}</div>
-                </div>
-                <div className={`px-6 py-2 rounded-lg text-sm font-black text-white ${
-                  aiAnalysis?.rec === 'BUY' ? 'bg-emerald-600' : aiAnalysis?.rec === 'SELL' ? 'bg-rose-600' : 'bg-slate-700'
-                }`}>
-                  {aiAnalysis?.rec || 'HOLD'}
+                <div className="flex flex-col items-center pl-4 border-r border-white/10">
+                   <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Recommendation</p>
+                   <p className={`text-2xl font-black ${aiAnalysis?.rec === 'BUY' ? 'text-emerald-400' : aiAnalysis?.rec === 'SELL' ? 'text-rose-400' : 'text-slate-400'}`}>
+                    {aiAnalysis?.rec || 'ANALYZING'}
+                   </p>
                 </div>
               </div>
             </div>
@@ -368,48 +320,55 @@ const App = () => {
         </main>
 
         {/* Sidebar */}
-        <aside className="w-72 border-r border-white/5 bg-[#0a0d14] flex flex-col shrink-0 text-right">
-          <div className="p-4 border-b border-white/5 flex items-center justify-between flex-row-reverse">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">רשימת מעקב</span>
-            <button onClick={addToWatchlist} className="text-slate-500 hover:text-white transition-colors">
-                <Plus size={14} />
-            </button>
+        <aside className="w-80 border-r border-white/5 bg-[#0a0f1e] flex flex-col shrink-0">
+          <div className="p-4 border-b border-white/5 flex items-center justify-between">
+            <h2 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">רשימת מעקב (Watchlist)</h2>
+            <Activity size={14} className="text-blue-500" />
           </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {watchlist.map(s => (
               <div 
                 key={s}
                 onClick={() => setTicker(s)}
-                className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all flex-row-reverse ${ticker === s ? 'bg-blue-600/10 border border-blue-500/20' : 'hover:bg-white/5 border border-transparent'}`}
+                className={`p-4 rounded-2xl cursor-pointer transition-all border ${ticker === s ? 'bg-blue-600/10 border-blue-500/30' : 'bg-white/5 border-transparent hover:border-white/10'}`}
               >
-                <span className={`font-bold text-sm ${ticker === s ? 'text-white' : 'text-slate-400'}`}>{s}</span>
-                <div className="flex items-center gap-2">
-                  <button onClick={(e) => removeFromWatchlist(s, e)} className="text-slate-700 hover:text-rose-500">
+                <div className="flex justify-between items-start mb-2">
+                  <span className="text-lg font-black text-white">{s}</span>
+                  <button onClick={(e) => { e.stopPropagation(); setWatchlist(prev => prev.filter(item => item !== s)); }} className="text-slate-600 hover:text-rose-500">
                     <Trash2 size={12} />
                   </button>
-                  <ChevronRight size={14} className={`rotate-180 ${ticker === s ? 'text-blue-500' : 'text-slate-700'}`} />
+                </div>
+                <div className="flex justify-between items-end">
+                  <div className="text-[10px] font-bold text-slate-500 uppercase">Live Price</div>
+                  <div className="text-sm font-mono font-bold text-slate-300">$---.--</div>
                 </div>
               </div>
             ))}
           </div>
-          <div className="p-4 border-t border-white/5">
-            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 flex gap-2 flex-row-reverse">
-              <AlertTriangle size={14} className="text-amber-500 shrink-0" />
-              <p className="text-[9px] text-amber-200/50 leading-tight">אין לראות במידע זה ייעוץ פיננסי או המלצה להשקעה בניירות ערך.</p>
-            </div>
+          <div className="p-4 bg-[#020617]/50 border-t border-white/5">
+             <div className="flex items-center gap-2 mb-3">
+                <AlertTriangle size={14} className="text-amber-500" />
+                <span className="text-[10px] font-bold text-amber-500 uppercase">Risk Disclaimer</span>
+             </div>
+             <p className="text-[9px] text-slate-500 leading-relaxed font-medium">
+               המסחר בניירות ערך כרוך בסיכון משמעותי. המלצות ה-AI מבוססות על מודלים סטטיסטיים בלבד ואינן מהוות ייעוץ השקעות.
+             </p>
           </div>
         </aside>
       </div>
 
-      <footer className="h-6 bg-[#0a0d14] border-t border-white/5 px-6 flex items-center justify-between text-[9px] font-bold text-slate-600 tracking-widest uppercase">
+      <footer className="h-8 bg-[#0a0f1e] border-t border-white/5 px-6 flex items-center justify-between text-[9px] font-black text-slate-600 tracking-tighter uppercase">
         <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1">
-                <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse"></div>
-                SYSTEM ACTIVE
-            </div>
-            <span>DATA: {isSimulated ? 'DELAYED_MOCK' : 'REALTIME_FEED'}</span>
+          <div className="flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+            CONNECTED TO ALPHA_VANTAGE
+          </div>
+          <span>NODE: TA_ISRAEL_01</span>
         </div>
-        <div>QUANTA PRO TERMINAL v2.4</div>
+        <div className="flex items-center gap-4">
+           <span>MARKET STATUS: OPEN</span>
+           <span className="text-blue-500">QUANTA PRO v3.0 LIVE EDITION</span>
+        </div>
       </footer>
     </div>
   );
