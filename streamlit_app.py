@@ -16,22 +16,6 @@ import {
 const API_KEY_STOCK = "GNYJ6HBVJV6Z8TVS";
 const STORAGE_KEY = 'quanta_watchlist';
 
-// Helper to load external scripts safely using a more robust CDN
-const loadScript = (src) => {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const script = document.createElement('script');
-    script.src = src;
-    script.async = true;
-    script.onload = () => {
-      // Extended delay to ensure the library is fully registered in the global scope
-      setTimeout(resolve, 500);
-    };
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
-};
-
 const App = () => {
   const [ticker, setTicker] = useState('NVDA');
   const [searchQuery, setSearchQuery] = useState('');
@@ -41,7 +25,7 @@ const App = () => {
   const [aiAnalysis, setAiAnalysis] = useState(null);
   const [loading, setLoading] = useState(false);
   const [isSimulated, setIsSimulated] = useState(false);
-  const [libLoaded, setLibLoaded] = useState(false);
+  const [libReady, setLibReady] = useState(false);
 
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -149,7 +133,7 @@ const App = () => {
         volume: parseInt(seriesData[Object.keys(seriesData)[0]]["5. volume"]).toLocaleString()
       });
 
-      if (seriesRef.current && typeof seriesRef.current.setData === 'function') {
+      if (seriesRef.current) {
         seriesRef.current.setData(formatted);
       }
       generateAIRecommendation(symbol, latest.close, formatted);
@@ -171,7 +155,7 @@ const App = () => {
         });
         base = c;
       }
-      if (seriesRef.current && typeof seriesRef.current.setData === 'function') {
+      if (seriesRef.current) {
         seriesRef.current.setData(mock);
       }
       setStats({ price: base.toFixed(2), change: "1.20", pct: "0.85", high: (base+2).toFixed(2), low: (base-2).toFixed(2), volume: "1.2M" });
@@ -179,87 +163,98 @@ const App = () => {
       setIsSimulated(true);
     } finally {
       setLoading(false);
-      if (chartRef.current && typeof chartRef.current.timeScale === 'function') {
+      if (chartRef.current) {
         chartRef.current.timeScale().fitContent();
       }
     }
   }, []);
 
-  // --- Script Loader ---
+  // --- Robust Library Initialization ---
   useEffect(() => {
-    // Using a direct, single-file version of the library
-    loadScript('https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js')
-      .then(() => setLibLoaded(true))
-      .catch(e => console.error("Library failed to load", e));
+    const scriptId = 'lw-charts-script';
+    if (!document.getElementById(scriptId)) {
+      const script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js';
+      script.async = true;
+      script.onload = () => setLibReady(true);
+      document.head.appendChild(script);
+    } else if (window.LightweightCharts) {
+      setLibReady(true);
+    }
   }, []);
 
   // --- Chart Lifecycle ---
   useEffect(() => {
-    if (!libLoaded || !chartContainerRef.current) return;
+    if (!libReady || !chartContainerRef.current) return;
 
-    // Use a safety check for the global object
     const LWCharts = window.LightweightCharts;
-    if (!LWCharts) return;
+    if (!LWCharts || typeof LWCharts.createChart !== 'function') {
+      const timer = setTimeout(() => setLibReady(false), 500); // Retry logic
+      return () => clearTimeout(timer);
+    }
 
-    const currentContainer = chartContainerRef.current;
-    let chart;
+    const container = chartContainerRef.current;
+    
+    // Cleanup previous chart
+    if (chartRef.current) {
+      chartRef.current.remove();
+    }
 
-    const initChart = () => {
-        try {
-            chart = LWCharts.createChart(currentContainer, {
-              layout: { backgroundColor: '#05070a', textColor: '#d1d5db', fontSize: 12 },
-              grid: { vertLines: { color: '#111827' }, horzLines: { color: '#111827' } },
-              rightPriceScale: { borderColor: '#1f2937' },
-              timeScale: { borderColor: '#1f2937', timeVisible: true },
-              width: currentContainer.clientWidth,
-              height: currentContainer.clientHeight
-            });
+    try {
+      const chart = LWCharts.createChart(container, {
+        layout: { 
+          backgroundColor: '#05070a', 
+          textColor: '#d1d5db',
+          fontSize: 12 
+        },
+        grid: { 
+          vertLines: { color: '#111827' }, 
+          horzLines: { color: '#111827' } 
+        },
+        rightPriceScale: { borderColor: '#1f2937' },
+        timeScale: { borderColor: '#1f2937', timeVisible: true },
+        width: container.clientWidth,
+        height: container.clientHeight
+      });
 
-            // If the standard method is missing, we try to wait or find it
-            if (!chart.addCandlestickSeries) {
-                console.warn("Retrying chart initialization...");
-                chart.remove();
-                setTimeout(initChart, 200);
-                return;
-            }
+      const candleSeries = chart.addCandlestickSeries({
+        upColor: '#10b981', 
+        downColor: '#ef4444', 
+        borderVisible: false, 
+        wickUpColor: '#10b981', 
+        wickDownColor: '#ef4444'
+      });
 
-            const candleSeries = chart.addCandlestickSeries({
-              upColor: '#10b981', downColor: '#ef4444', borderVisible: false, wickUpColor: '#10b981', wickDownColor: '#ef4444'
-            });
+      chartRef.current = chart;
+      seriesRef.current = candleSeries;
 
-            chartRef.current = chart;
-            seriesRef.current = candleSeries;
+      fetchData(ticker, timeframe);
 
-            fetchData(ticker, timeframe);
-        } catch (err) {
-            console.error("Initialization error:", err);
+      const handleResize = () => {
+        if (container && chartRef.current) {
+          chartRef.current.applyOptions({ 
+            width: container.clientWidth,
+            height: container.clientHeight
+          });
         }
-    };
+      };
 
-    initChart();
-
-    const handleResize = () => {
-      if (currentContainer && chartRef.current) {
-        chartRef.current.applyOptions({ 
-          width: currentContainer.clientWidth,
-          height: currentContainer.clientHeight
-        });
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      if (chartRef.current) {
-        chartRef.current.remove();
-        chartRef.current = null;
-      }
-    };
-  }, [libLoaded, ticker, timeframe, fetchData]);
+      window.addEventListener('resize', handleResize);
+      return () => {
+        window.removeEventListener('resize', handleResize);
+        if (chartRef.current) {
+          chartRef.current.remove();
+          chartRef.current = null;
+        }
+      };
+    } catch (e) {
+      console.error("Chart initialization failed:", e);
+    }
+  }, [libReady, ticker, timeframe, fetchData]);
 
   return (
-    <div className="flex flex-col h-screen bg-[#05070a] text-slate-200 font-sans select-none overflow-hidden">
+    <div className="flex flex-col h-screen bg-[#05070a] text-slate-200 font-sans select-none overflow-hidden" dir="ltr">
       {/* Header */}
       <header className="h-16 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a0d14] shrink-0">
         <div className="flex items-center gap-6">
@@ -299,8 +294,8 @@ const App = () => {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value.toUpperCase())}
               onKeyDown={(e) => e.key === 'Enter' && addToWatchlist()}
-              placeholder="חפש סימול..."
-              className="bg-[#111827] border border-white/10 rounded-xl pl-10 pr-10 py-2 text-sm w-64 focus:ring-2 focus:ring-blue-500 outline-none text-white"
+              placeholder="Search ticker..."
+              className="bg-[#111827] border border-white/10 rounded-xl pl-10 pr-10 py-2 text-sm w-64 focus:ring-2 focus:ring-blue-500 outline-none text-white text-left"
             />
           </div>
           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold border ${isSimulated ? 'bg-amber-500/10 text-amber-500 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'}`}>
@@ -310,27 +305,27 @@ const App = () => {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
-        <main className="flex-1 flex flex-col min-w-0">
+      <div className="flex flex-1 overflow-hidden" dir="rtl">
+        <main className="flex-1 flex flex-col min-w-0" dir="ltr">
           {/* Stats Bar */}
-          <div className="p-6 grid grid-cols-4 gap-4 border-b border-white/5 bg-[#0a0d14]/50">
-            <div>
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider font-hebrew">נכס</span>
+          <div className="p-6 grid grid-cols-4 gap-4 border-b border-white/5 bg-[#0a0d14]/50" dir="rtl">
+            <div className="text-right">
+              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">נכס</span>
               <div className="text-3xl font-black text-white">{ticker}</div>
             </div>
-            <div>
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider font-hebrew">מחיר</span>
+            <div className="text-right">
+              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">מחיר</span>
               <div className="text-3xl font-mono font-bold text-white">${stats.price}</div>
             </div>
-            <div>
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider font-hebrew">שינוי</span>
-              <div className={`text-3xl font-mono font-bold flex items-center gap-2 ${parseFloat(stats.change) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            <div className="text-right">
+              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">שינוי</span>
+              <div className={`text-3xl font-mono font-bold flex items-center justify-end gap-2 ${parseFloat(stats.change) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {parseFloat(stats.change) >= 0 ? <TrendingUp size={24} /> : <TrendingDown size={24} />}
                 {stats.pct}%
               </div>
             </div>
-            <div className="flex flex-col justify-center border-l border-white/10 pl-6">
-              <span className="text-[10px] text-slate-500 font-bold uppercase block mb-1 font-hebrew">מחזור (Volume)</span>
+            <div className="flex flex-col justify-center border-r border-white/10 pr-6 text-right">
+              <span className="text-[10px] text-slate-500 font-bold uppercase block mb-1">מחזור (Volume)</span>
               <span className="text-sm font-bold text-slate-300">{stats.volume}</span>
             </div>
           </div>
@@ -345,21 +340,21 @@ const App = () => {
             <div ref={chartContainerRef} className="w-full h-full" />
 
             {/* AI Recommendation */}
-            <div className="absolute bottom-6 left-6 right-6 bg-[#0a0d14]/90 backdrop-blur-md border border-white/10 rounded-2xl p-4 flex items-center justify-between shadow-2xl z-40">
+            <div className="absolute bottom-6 left-6 right-6 bg-[#0a0d14]/90 backdrop-blur-md border border-white/10 rounded-2xl p-4 flex items-center justify-between shadow-2xl z-40" dir="rtl">
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 bg-blue-600/20 rounded-lg flex items-center justify-center text-blue-500">
                   <Cpu size={20} />
                 </div>
-                <div className="rtl text-right">
-                  <h4 className="text-[10px] font-bold text-blue-400 uppercase tracking-widest flex items-center gap-1 font-hebrew">
+                <div className="text-right">
+                  <h4 className="text-[10px] font-bold text-blue-400 uppercase tracking-widest flex items-center gap-1">
                     <BarChart3 size={10} /> ניתוח מערכת AI
                   </h4>
-                  <p className="text-xs text-slate-300 max-w-xl font-hebrew">{aiAnalysis?.insight || "מעבד נתונים..."}</p>
+                  <p className="text-xs text-slate-300 max-w-xl">{aiAnalysis?.insight || "מעבד נתונים..."}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-4 pl-4 border-l border-white/10">
+              <div className="flex items-center gap-4 pr-4 border-r border-white/10">
                 <div className="text-center">
-                  <div className="text-[10px] text-slate-500 uppercase font-bold font-hebrew">ציון</div>
+                  <div className="text-[10px] text-slate-500 uppercase font-bold">ציון</div>
                   <div className="text-xl font-black text-white">{aiAnalysis?.score || '--'}</div>
                 </div>
                 <div className={`px-6 py-2 rounded-lg text-sm font-black text-white ${
@@ -373,9 +368,9 @@ const App = () => {
         </main>
 
         {/* Sidebar */}
-        <aside className="w-72 border-l border-white/5 bg-[#0a0d14] flex flex-col shrink-0">
-          <div className="p-4 border-b border-white/5 flex items-center justify-between">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-hebrew">רשימת מעקב</span>
+        <aside className="w-72 border-r border-white/5 bg-[#0a0d14] flex flex-col shrink-0 text-right">
+          <div className="p-4 border-b border-white/5 flex items-center justify-between flex-row-reverse">
+            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">רשימת מעקב</span>
             <button onClick={addToWatchlist} className="text-slate-500 hover:text-white transition-colors">
                 <Plus size={14} />
             </button>
@@ -385,22 +380,22 @@ const App = () => {
               <div 
                 key={s}
                 onClick={() => setTicker(s)}
-                className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${ticker === s ? 'bg-blue-600/10 border border-blue-500/20' : 'hover:bg-white/5 border border-transparent'}`}
+                className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all flex-row-reverse ${ticker === s ? 'bg-blue-600/10 border border-blue-500/20' : 'hover:bg-white/5 border border-transparent'}`}
               >
                 <span className={`font-bold text-sm ${ticker === s ? 'text-white' : 'text-slate-400'}`}>{s}</span>
                 <div className="flex items-center gap-2">
-                  <ChevronRight size={14} className={ticker === s ? 'text-blue-500' : 'text-slate-700'} />
                   <button onClick={(e) => removeFromWatchlist(s, e)} className="text-slate-700 hover:text-rose-500">
                     <Trash2 size={12} />
                   </button>
+                  <ChevronRight size={14} className={`rotate-180 ${ticker === s ? 'text-blue-500' : 'text-slate-700'}`} />
                 </div>
               </div>
             ))}
           </div>
           <div className="p-4 border-t border-white/5">
-            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 flex gap-2">
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 flex gap-2 flex-row-reverse">
               <AlertTriangle size={14} className="text-amber-500 shrink-0" />
-              <p className="text-[9px] text-amber-200/50 leading-tight rtl text-right font-hebrew">אין לראות במידע זה ייעוץ פיננסי או המלצה להשקעה בניירות ערך.</p>
+              <p className="text-[9px] text-amber-200/50 leading-tight">אין לראות במידע זה ייעוץ פיננסי או המלצה להשקעה בניירות ערך.</p>
             </div>
           </div>
         </aside>
@@ -408,13 +403,13 @@ const App = () => {
 
       <footer className="h-6 bg-[#0a0d14] border-t border-white/5 px-6 flex items-center justify-between text-[9px] font-bold text-slate-600 tracking-widest uppercase">
         <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1 font-hebrew">
+            <div className="flex items-center gap-1">
                 <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse"></div>
-                מערכת פעילה
+                SYSTEM ACTIVE
             </div>
             <span>DATA: {isSimulated ? 'DELAYED_MOCK' : 'REALTIME_FEED'}</span>
         </div>
-        <div>QUANTA PRO TERMINAL v2.3</div>
+        <div>QUANTA PRO TERMINAL v2.4</div>
       </footer>
     </div>
   );
