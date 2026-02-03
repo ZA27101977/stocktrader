@@ -1,342 +1,423 @@
-<!DOCTYPE html>
-<html lang="en" dir="ltr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QUANTA PRO | Real-Time AI Terminal</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Assistant:wght@300;400;600;700&display=swap');
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { 
+  TrendingUp, 
+  TrendingDown, 
+  Search, 
+  Plus, 
+  Trash2, 
+  Cpu, 
+  BarChart3, 
+  Clock, 
+  AlertTriangle,
+  ChevronRight,
+  Activity
+} from 'lucide-react';
+
+const API_KEY_STOCK = "GNYJ6HBVJV6Z8TVS";
+const STORAGE_KEY = 'quanta_watchlist';
+
+// Helper to load external scripts safely using a more robust CDN
+const loadScript = (src) => {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.onload = () => {
+      // Extended delay to ensure the library is fully registered in the global scope
+      setTimeout(resolve, 500);
+    };
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+};
+
+const App = () => {
+  const [ticker, setTicker] = useState('NVDA');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [watchlist, setWatchlist] = useState(['AAPL', 'TSLA', 'NVDA', 'MSFT', 'META']);
+  const [timeframe, setTimeframe] = useState({ id: '1D', func: 'TIME_SERIES_INTRADAY', interval: '5min', label: '1D' });
+  const [stats, setStats] = useState({ price: "0.00", change: "0.00", pct: "0.00", high: "0.00", low: "0.00", volume: "0" });
+  const [aiAnalysis, setAiAnalysis] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [isSimulated, setIsSimulated] = useState(false);
+  const [libLoaded, setLibLoaded] = useState(false);
+
+  const chartContainerRef = useRef(null);
+  const chartRef = useRef(null);
+  const seriesRef = useRef(null);
+  const lastCallRef = useRef('');
+
+  // --- Watchlist Persistence ---
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        setWatchlist(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to parse watchlist", e);
+      }
+    }
+  }, []);
+
+  const addToWatchlist = () => {
+    if (searchQuery && !watchlist.includes(searchQuery.toUpperCase())) {
+      const newList = [searchQuery.toUpperCase(), ...watchlist];
+      setWatchlist(newList);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
+      setTicker(searchQuery.toUpperCase());
+      setSearchQuery('');
+    }
+  };
+
+  const removeFromWatchlist = (symbol, e) => {
+    e.stopPropagation();
+    const newList = watchlist.filter(s => s !== symbol);
+    setWatchlist(newList);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
+  };
+
+  // --- AI Analysis Logic ---
+  const generateAIRecommendation = (symbol, currentPrice, data) => {
+    if (!data || data.length < 10) return;
+    
+    const last = data[data.length - 1].close;
+    const prev = data[data.length - 10]?.close || data[0].close;
+    const momentum = ((last - prev) / prev) * 100;
+    
+    let rec = "HOLD";
+    let score = 50;
+    let insight = "";
+
+    if (momentum > 1.2) {
+      rec = "BUY";
+      score = Math.min(95, 70 + momentum * 2);
+      insight = `מניית ${symbol} מציגה מומנטום חיובי חזק. הפריצה מעל רמות התמיכה מעידה על פוטנציאל המשך עליות.`;
+    } else if (momentum < -1.2) {
+      rec = "SELL";
+      score = Math.max(5, 30 + momentum * 2);
+      insight = `לחץ מכירות ב-${symbol}. האינדיקטורים מצביעים על חולשה, מומלץ להמתין להתייצבות.`;
+    } else {
+      insight = `המניה נסחרת בטווח דשדוש. אין כיוון ברור כרגע, מומלץ להמתין לפריצה.`;
+    }
+
+    setAiAnalysis({ rec, score: Math.round(score), insight });
+  };
+
+  // --- Data Fetching ---
+  const fetchData = useCallback(async (symbol, tf) => {
+    const callKey = `${symbol}-${tf.id}`;
+    if (lastCallRef.current === callKey) return;
+    lastCallRef.current = callKey;
+    
+    setLoading(true);
+    try {
+      let url = `https://www.alphavantage.co/query?function=${tf.func}&symbol=${symbol}&apikey=${API_KEY_STOCK}`;
+      if (tf.interval) url += `&interval=${tf.interval}`;
+
+      const res = await fetch(url);
+      const data = await res.json();
+      
+      const keyMap = {
+        '1D': "Time Series (5min)",
+        '1W': "Time Series (Daily)",
+        '1M': "Time Series (Daily)",
+        '1Y': "Weekly Time Series"
+      };
+
+      const seriesData = data[keyMap[tf.id]];
+      
+      if (!seriesData) throw new Error("API Limit");
+
+      const formatted = Object.entries(seriesData).map(([time, v]) => ({
+        time: tf.id === '1D' ? Math.floor(new Date(time).getTime() / 1000) : time,
+        open: parseFloat(v["1. open"]),
+        high: parseFloat(v["2. high"]),
+        low: parseFloat(v["3. low"]),
+        close: parseFloat(v["4. close"]),
+      })).reverse();
+
+      const latest = formatted[formatted.length - 1];
+      const prev = formatted[formatted.length - 2] || latest;
+      
+      setStats({
+        price: latest.close.toFixed(2),
+        change: (latest.close - prev.close).toFixed(2),
+        pct: (((latest.close - prev.close) / prev.close) * 100).toFixed(2),
+        high: latest.high.toFixed(2),
+        low: latest.low.toFixed(2),
+        volume: parseInt(seriesData[Object.keys(seriesData)[0]]["5. volume"]).toLocaleString()
+      });
+
+      if (seriesRef.current && typeof seriesRef.current.setData === 'function') {
+        seriesRef.current.setData(formatted);
+      }
+      generateAIRecommendation(symbol, latest.close, formatted);
+      setIsSimulated(false);
+    } catch (err) {
+      const mock = [];
+      let base = 150 + Math.random() * 50;
+      const now = Math.floor(Date.now() / 1000);
+      for(let i=0; i<100; i++) {
+        const o = base + (Math.random() - 0.5) * 2;
+        const c = o + (Math.random() - 0.5) * 3;
+        const timeValue = tf.id === '1D' 
+          ? now - (100 - i) * 300 
+          : new Date(Date.now() - (100 - i) * 86400000).toISOString().split('T')[0];
         
-        :root {
-            --bg-main: #020408;
-            --bg-card: #0d1117;
-            --accent-blue: #3b82f6;
-            --border: rgba(255, 255, 255, 0.08);
+        mock.push({
+          time: timeValue,
+          open: o, high: Math.max(o, c) + 0.5, low: Math.min(o, c) - 0.5, close: c
+        });
+        base = c;
+      }
+      if (seriesRef.current && typeof seriesRef.current.setData === 'function') {
+        seriesRef.current.setData(mock);
+      }
+      setStats({ price: base.toFixed(2), change: "1.20", pct: "0.85", high: (base+2).toFixed(2), low: (base-2).toFixed(2), volume: "1.2M" });
+      generateAIRecommendation(symbol, base, mock);
+      setIsSimulated(true);
+    } finally {
+      setLoading(false);
+      if (chartRef.current && typeof chartRef.current.timeScale === 'function') {
+        chartRef.current.timeScale().fitContent();
+      }
+    }
+  }, []);
+
+  // --- Script Loader ---
+  useEffect(() => {
+    // Using a direct, single-file version of the library
+    loadScript('https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js')
+      .then(() => setLibLoaded(true))
+      .catch(e => console.error("Library failed to load", e));
+  }, []);
+
+  // --- Chart Lifecycle ---
+  useEffect(() => {
+    if (!libLoaded || !chartContainerRef.current) return;
+
+    // Use a safety check for the global object
+    const LWCharts = window.LightweightCharts;
+    if (!LWCharts) return;
+
+    const currentContainer = chartContainerRef.current;
+    let chart;
+
+    const initChart = () => {
+        try {
+            chart = LWCharts.createChart(currentContainer, {
+              layout: { backgroundColor: '#05070a', textColor: '#d1d5db', fontSize: 12 },
+              grid: { vertLines: { color: '#111827' }, horzLines: { color: '#111827' } },
+              rightPriceScale: { borderColor: '#1f2937' },
+              timeScale: { borderColor: '#1f2937', timeVisible: true },
+              width: currentContainer.clientWidth,
+              height: currentContainer.clientHeight
+            });
+
+            // If the standard method is missing, we try to wait or find it
+            if (!chart.addCandlestickSeries) {
+                console.warn("Retrying chart initialization...");
+                chart.remove();
+                setTimeout(initChart, 200);
+                return;
+            }
+
+            const candleSeries = chart.addCandlestickSeries({
+              upColor: '#10b981', downColor: '#ef4444', borderVisible: false, wickUpColor: '#10b981', wickDownColor: '#ef4444'
+            });
+
+            chartRef.current = chart;
+            seriesRef.current = candleSeries;
+
+            fetchData(ticker, timeframe);
+        } catch (err) {
+            console.error("Initialization error:", err);
         }
+    };
 
-        body {
-            background-color: var(--bg-main);
-            color: #e6edf3;
-            font-family: 'Inter', sans-serif;
-            margin: 0;
-            overflow: hidden;
-        }
+    initChart();
 
-        .hebrew { font-family: 'Assistant', sans-serif; direction: rtl; }
-        
-        .main-grid {
-            display: grid;
-            grid-template-columns: 1fr 320px;
-            grid-template-rows: 64px 80px 1fr 32px;
-            height: 100vh;
-        }
+    const handleResize = () => {
+      if (currentContainer && chartRef.current) {
+        chartRef.current.applyOptions({ 
+          width: currentContainer.clientWidth,
+          height: currentContainer.clientHeight
+        });
+      }
+    };
 
-        .panel { border: 1px solid var(--border); background: var(--bg-main); overflow: hidden; }
-        .header { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; background: #0d1117; }
-        .ticker-bar { grid-column: 1 / 2; display: flex; align-items: center; gap: 32px; padding: 0 24px; background: #06090f; }
-        .watchlist { grid-row: 2 / 4; grid-column: 2; border-left: 2px solid var(--border); }
-        .chart-area { grid-row: 3 / 4; grid-column: 1; position: relative; }
-        
-        .btn-tf {
-            padding: 4px 12px; font-size: 11px; font-weight: 700; border-radius: 4px;
-            color: #8b949e; transition: 0.2s;
-        }
-        .btn-tf.active { background: var(--accent-blue); color: white; }
+    window.addEventListener('resize', handleResize);
 
-        .ai-card {
-            position: absolute; bottom: 24px; left: 24px; right: 24px;
-            background: rgba(13, 17, 23, 0.85); backdrop-filter: blur(12px);
-            border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 16px;
-            padding: 20px; z-index: 50; display: flex; justify-content: space-between; align-items: center;
-        }
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+      }
+    };
+  }, [libLoaded, ticker, timeframe, fetchData]);
 
-        .status-badge {
-            font-size: 10px; font-weight: bold; padding: 4px 10px; border-radius: 99px;
-        }
-    </style>
-</head>
-<body>
-    <div id="root"></div>
+  return (
+    <div className="flex flex-col h-screen bg-[#05070a] text-slate-200 font-sans select-none overflow-hidden">
+      {/* Header */}
+      <header className="h-16 border-b border-white/5 flex items-center justify-between px-6 bg-[#0a0d14] shrink-0">
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center font-black text-white">Q</div>
+            <span className="text-xl font-bold tracking-tight text-white">QUANTA<span className="text-blue-500">PRO</span></span>
+          </div>
+          
+          <div className="flex bg-[#111827] rounded-lg border border-white/10 p-1">
+            {['1D', '1W', '1M', '1Y'].map(id => (
+              <button
+                key={id}
+                onClick={() => {
+                  const configs = {
+                    '1D': { id: '1D', func: 'TIME_SERIES_INTRADAY', interval: '5min' },
+                    '1W': { id: '1W', func: 'TIME_SERIES_DAILY' },
+                    '1M': { id: '1M', func: 'TIME_SERIES_DAILY' },
+                    '1Y': { id: '1Y', func: 'TIME_SERIES_WEEKLY' }
+                  };
+                  setTimeframe(configs[id]);
+                }}
+                className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${timeframe.id === id ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}
+              >
+                {id}
+              </button>
+            ))}
+          </div>
+        </div>
 
-    <script type="text/babel">
-        const { useState, useEffect, useRef, useCallback } = React;
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                <Search size={16} />
+            </div>
+            <input 
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value.toUpperCase())}
+              onKeyDown={(e) => e.key === 'Enter' && addToWatchlist()}
+              placeholder="חפש סימול..."
+              className="bg-[#111827] border border-white/10 rounded-xl pl-10 pr-10 py-2 text-sm w-64 focus:ring-2 focus:ring-blue-500 outline-none text-white"
+            />
+          </div>
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold border ${isSimulated ? 'bg-amber-500/10 text-amber-500 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'}`}>
+            <Activity size={12} className="animate-pulse" />
+            {isSimulated ? 'SIMULATED' : 'LIVE'}
+          </div>
+        </div>
+      </header>
 
-        const API_KEY_STOCK = "GNYJ6HBVJV6Z8TVS"; 
-        const API_KEY_GEMINI = ""; 
+      <div className="flex flex-1 overflow-hidden">
+        <main className="flex-1 flex flex-col min-w-0">
+          {/* Stats Bar */}
+          <div className="p-6 grid grid-cols-4 gap-4 border-b border-white/5 bg-[#0a0d14]/50">
+            <div>
+              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider font-hebrew">נכס</span>
+              <div className="text-3xl font-black text-white">{ticker}</div>
+            </div>
+            <div>
+              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider font-hebrew">מחיר</span>
+              <div className="text-3xl font-mono font-bold text-white">${stats.price}</div>
+            </div>
+            <div>
+              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider font-hebrew">שינוי</span>
+              <div className={`text-3xl font-mono font-bold flex items-center gap-2 ${parseFloat(stats.change) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {parseFloat(stats.change) >= 0 ? <TrendingUp size={24} /> : <TrendingDown size={24} />}
+                {stats.pct}%
+              </div>
+            </div>
+            <div className="flex flex-col justify-center border-l border-white/10 pl-6">
+              <span className="text-[10px] text-slate-500 font-bold uppercase block mb-1 font-hebrew">מחזור (Volume)</span>
+              <span className="text-sm font-bold text-slate-300">{stats.volume}</span>
+            </div>
+          </div>
 
-        const TIMEFRAMES = [
-            { id: '1D', func: 'TIME_SERIES_INTRADAY', interval: '5min', label: '1 יום' },
-            { id: '1W', func: 'TIME_SERIES_DAILY', limit: 7, label: '1 שבוע' },
-            { id: '1M', func: 'TIME_SERIES_DAILY', limit: 30, label: '1 חודש' },
-            { id: '1Y', func: 'TIME_SERIES_WEEKLY', limit: 52, label: '1 שנה' }
-        ];
+          {/* Chart Area */}
+          <div className="flex-1 relative bg-[#05070a] min-h-0">
+            {loading && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#05070a]/50">
+                <div className="w-10 h-10 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            )}
+            <div ref={chartContainerRef} className="w-full h-full" />
 
-        // Persistent cache to avoid repeated network requests
-        const marketCache = new Map();
-
-        const App = () => {
-            const [ticker, setTicker] = useState('NVDA');
-            const [tf, setTf] = useState(TIMEFRAMES[0]);
-            const [stats, setStats] = useState({ price: '0.00', change: '0.00', pct: '0.00%' });
-            const [aiResponse, setAiResponse] = useState(null);
-            const [loading, setLoading] = useState(false);
-            const [isSimulated, setIsSimulated] = useState(false);
-            
-            const chartRef = useRef(null);
-            const seriesRef = useRef(null);
-            const chartInstance = useRef(null);
-            const lastFetchRef = useRef(""); // Track last ticker+tf combination
-
-            const generateMockData = (timeframe, lastPrice = 200) => {
-                const mock = [];
-                let p = parseFloat(lastPrice) || 200;
-                let now = new Date();
-                const count = 100;
-                for (let i = 0; i < count; i++) {
-                    const open = p + (Math.random() - 0.5) * (p * 0.01);
-                    const close = open + (Math.random() - 0.5) * (p * 0.008);
-                    mock.push({
-                        time: timeframe.id === '1D' ? Math.floor(now.getTime() / 1000) - (count - i) * 300 : new Date(now.getTime() - (count-i)*86400000).toISOString().split('T')[0],
-                        open, high: Math.max(open, close) + (p * 0.003), low: Math.min(open, close) - (p * 0.003), close
-                    });
-                    p = close;
-                }
-                return mock;
-            };
-
-            const askGemini = async (symbol, price, pct) => {
-                if (!API_KEY_GEMINI) {
-                    setAiResponse({ rec: "HOLD", score: 55, insight: "מנתח נתונים טכניים עבור " + symbol });
-                    return;
-                }
-                const prompt = `Analyze ${symbol} at $${price} (${pct}%). Return JSON: {"rec": "BUY/SELL/HOLD", "score": 0-100, "insight": "Hebrew text"}`;
-                try {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY_GEMINI}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ parts: [{ text: prompt }] }],
-                            generationConfig: { responseMimeType: "application/json" }
-                        })
-                    });
-                    const result = await res.json();
-                    setAiResponse(JSON.parse(result.candidates[0].content.parts[0].text));
-                } catch (e) {
-                    setAiResponse({ rec: "HOLD", score: 50, insight: "ממתין לתובנות בינה מלאכותית..." });
-                }
-            };
-
-            const updateChartData = useCallback(async (symbol, timeframe) => {
-                const comboKey = `${symbol}-${timeframe.id}`;
-                if (lastFetchRef.current === comboKey) return;
-                lastFetchRef.current = comboKey;
-
-                setLoading(true);
-                
-                // Check Cache
-                if (marketCache.has(comboKey)) {
-                    const cached = marketCache.get(comboKey);
-                    seriesRef.current.setData(cached.points);
-                    setStats(cached.stats);
-                    setIsSimulated(cached.simulated);
-                    setLoading(false);
-                    askGemini(symbol, cached.stats.price, cached.stats.pct);
-                    return;
-                }
-
-                try {
-                    let url = `https://www.alphavantage.co/query?function=${timeframe.func}&symbol=${symbol}&apikey=${API_KEY_STOCK}`;
-                    if (timeframe.id === '1D') url += `&interval=${timeframe.interval}`;
-
-                    const res = await fetch(url);
-                    const raw = await res.json();
-                    
-                    const keyMap = {
-                        '1D': "Time Series (5min)",
-                        '1W': "Time Series (Daily)",
-                        '1M': "Time Series (Daily)",
-                        '1Y': "Weekly Time Series"
-                    };
-
-                    const timeSeries = raw[keyMap[timeframe.id]];
-                    
-                    if (!timeSeries) {
-                        // Silent fail - switch to simulation
-                        const mock = generateMockData(timeframe, 150);
-                        seriesRef.current.setData(mock);
-                        const latest = mock[mock.length-1];
-                        const diff = (latest.close - mock[mock.length-2].close).toFixed(2);
-                        const newStats = { price: latest.close.toFixed(2), change: diff, pct: 'Simulated' };
-                        setStats(newStats);
-                        setIsSimulated(true);
-                        marketCache.set(comboKey, { points: mock, stats: newStats, simulated: true });
-                    } else {
-                        const formatted = Object.entries(timeSeries).map(([time, v]) => ({
-                            time: timeframe.id === '1D' ? Math.floor(new Date(time).getTime() / 1000) : time,
-                            open: parseFloat(v["1. open"]),
-                            high: parseFloat(v["2. high"]),
-                            low: parseFloat(v["3. low"]),
-                            close: parseFloat(v["4. close"]),
-                        })).reverse();
-
-                        const finalData = timeframe.limit ? formatted.slice(-timeframe.limit) : formatted;
-                        seriesRef.current.setData(finalData);
-                        
-                        const latest = finalData[finalData.length - 1];
-                        const prev = finalData[finalData.length - 2] || latest;
-                        const diff = (latest.close - prev.close).toFixed(2);
-                        const pct = ((diff / prev.close) * 100).toFixed(2);
-                        const newStats = { price: latest.close.toFixed(2), change: diff, pct: (diff >= 0 ? '+' : '') + pct + '%' };
-                        
-                        setStats(newStats);
-                        setIsSimulated(false);
-                        marketCache.set(comboKey, { points: finalData, stats: newStats, simulated: false });
-                        askGemini(symbol, newStats.price, newStats.pct);
-                    }
-                } catch (err) {
-                    console.error("Fetch error, using fallback");
-                    setIsSimulated(true);
-                } finally {
-                    setLoading(false);
-                    chartInstance.current.timeScale().fitContent();
-                }
-            }, []);
-
-            useEffect(() => {
-                // Initial Chart Setup
-                const chart = LightweightCharts.createChart(chartRef.current, {
-                    layout: { background: { color: '#020408' }, textColor: '#8b949e' },
-                    grid: { vertLines: { color: '#161b22' }, horzLines: { color: '#161b22' } },
-                    rightPriceScale: { borderColor: '#30363d' },
-                    timeScale: { borderColor: '#30363d', timeVisible: true },
-                });
-                const candleSeries = chart.addCandlestickSeries({
-                    upColor: '#238636', downColor: '#da3633', borderVisible: false, wickUpColor: '#238636', wickDownColor: '#da3633'
-                });
-                
-                chartInstance.current = chart;
-                seriesRef.current = candleSeries;
-
-                updateChartData(ticker, tf);
-
-                const handleResize = () => {
-                    if (chartRef.current) chart.applyOptions({ width: chartRef.current.clientWidth });
-                };
-                window.addEventListener('resize', handleResize);
-                return () => {
-                    window.removeEventListener('resize', handleResize);
-                    chart.remove();
-                };
-            }, []);
-
-            useEffect(() => {
-                updateChartData(ticker, tf);
-            }, [ticker, tf]);
-
-            return (
-                <div className="main-grid">
-                    <header className="header border-b border-white/5">
-                        <div className="flex items-center gap-3">
-                            <div className="bg-blue-600 text-white p-1 rounded font-black text-sm">Q</div>
-                            <span className="text-lg font-extrabold tracking-tighter uppercase">Quanta Pro <span className="text-blue-500">AI</span></span>
-                        </div>
-                        <div className="flex gap-4 items-center">
-                            <input 
-                                className="bg-[#161b22] border border-white/10 rounded-lg px-4 py-2 text-xs w-64 focus:ring-2 focus:ring-blue-500 outline-none font-bold"
-                                placeholder="חפש סימול..."
-                                onKeyDown={e => e.key === 'Enter' && setTicker(e.target.value.toUpperCase())}
-                            />
-                            <div className={`status-badge ${isSimulated ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
-                                {isSimulated ? 'מצב סימולציה' : 'נתוני שוק חיים'}
-                            </div>
-                        </div>
-                    </header>
-
-                    <div className="ticker-bar border-b border-white/5">
-                        <div className="flex flex-col">
-                            <span className="text-[10px] text-slate-500 font-bold uppercase">סימול</span>
-                            <span className="text-2xl font-black text-blue-500 leading-none">{ticker}</span>
-                        </div>
-                        <div className="flex flex-col">
-                            <span className="text-[10px] text-slate-500 font-bold uppercase">מחיר</span>
-                            <span className="text-2xl font-mono font-bold leading-none">${stats.price}</span>
-                        </div>
-                        <div className="flex flex-col">
-                            <span className="text-[10px] text-slate-500 font-bold uppercase">שינוי</span>
-                            <span className={`text-2xl font-mono font-bold leading-none ${parseFloat(stats.change) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                {stats.change} ({stats.pct})
-                            </span>
-                        </div>
-                        {loading && <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>}
-                    </div>
-
-                    <aside className="watchlist bg-[#0d1117] p-4">
-                        <h4 className="hebrew text-xs font-bold text-slate-500 mb-4 uppercase tracking-widest">מועדפים</h4>
-                        <div className="space-y-1">
-                            {['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL'].map(s => (
-                                <div 
-                                    key={s} 
-                                    onClick={() => setTicker(s)}
-                                    className={`flex justify-between p-3 rounded-lg cursor-pointer transition-all ${ticker === s ? 'bg-blue-600/20 border border-blue-500/30' : 'hover:bg-white/5'}`}
-                                >
-                                    <span className="font-bold text-sm">{s}</span>
-                                    <span className="text-[10px] text-slate-600 self-center">NASDAQ</span>
-                                </div>
-                            ))}
-                        </div>
-                    </aside>
-
-                    <main className="chart-area panel border-none">
-                        <div className="absolute top-4 left-4 z-20 flex gap-2">
-                            {TIMEFRAMES.map(item => (
-                                <button 
-                                    key={item.id} 
-                                    onClick={() => setTf(item)}
-                                    className={`btn-tf hebrew ${tf.id === item.id ? 'active' : 'bg-[#161b22] hover:bg-[#30363d]'}`}
-                                >
-                                    {item.label}
-                                </button>
-                            ))}
-                        </div>
-                        <div className="w-full h-full" ref={chartRef}></div>
-
-                        <div className="ai-card shadow-2xl">
-                            <div className="hebrew flex-1">
-                                <div className="text-[10px] font-bold text-blue-400 mb-1 uppercase tracking-widest">תובנת בינה מלאכותית</div>
-                                <p className="text-sm font-semibold text-slate-200">
-                                    {aiResponse ? aiResponse.insight : "סורק נתונים..."}
-                                </p>
-                            </div>
-                            <div className="flex gap-4 items-center mr-6 border-r border-white/10 pr-6">
-                                <div className="text-center">
-                                    <div className="text-[9px] font-bold text-slate-500 mb-1 uppercase">Score</div>
-                                    <div className="text-2xl font-black">{aiResponse?.score || '--'}</div>
-                                </div>
-                                <div className={`px-6 py-2 rounded-xl text-lg font-black ${
-                                    aiResponse?.rec === 'BUY' ? 'bg-emerald-600' : 
-                                    aiResponse?.rec === 'SELL' ? 'bg-rose-600' : 'bg-blue-600'
-                                }`}>
-                                    {aiResponse?.rec || 'WAIT'}
-                                </div>
-                            </div>
-                        </div>
-                    </main>
-
-                    <footer className="col-span-2 bg-[#020408] border-t border-white/5 px-6 flex items-center justify-between text-[10px] text-slate-600 font-bold uppercase">
-                        <div>TERMINAL STATUS: ONLINE</div>
-                        <div className="hebrew">מבוסס מערכת QUANTA AI v2.5</div>
-                    </footer>
+            {/* AI Recommendation */}
+            <div className="absolute bottom-6 left-6 right-6 bg-[#0a0d14]/90 backdrop-blur-md border border-white/10 rounded-2xl p-4 flex items-center justify-between shadow-2xl z-40">
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 bg-blue-600/20 rounded-lg flex items-center justify-center text-blue-500">
+                  <Cpu size={20} />
                 </div>
-            );
-        };
+                <div className="rtl text-right">
+                  <h4 className="text-[10px] font-bold text-blue-400 uppercase tracking-widest flex items-center gap-1 font-hebrew">
+                    <BarChart3 size={10} /> ניתוח מערכת AI
+                  </h4>
+                  <p className="text-xs text-slate-300 max-w-xl font-hebrew">{aiAnalysis?.insight || "מעבד נתונים..."}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4 pl-4 border-l border-white/10">
+                <div className="text-center">
+                  <div className="text-[10px] text-slate-500 uppercase font-bold font-hebrew">ציון</div>
+                  <div className="text-xl font-black text-white">{aiAnalysis?.score || '--'}</div>
+                </div>
+                <div className={`px-6 py-2 rounded-lg text-sm font-black text-white ${
+                  aiAnalysis?.rec === 'BUY' ? 'bg-emerald-600' : aiAnalysis?.rec === 'SELL' ? 'bg-rose-600' : 'bg-slate-700'
+                }`}>
+                  {aiAnalysis?.rec || 'HOLD'}
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+        {/* Sidebar */}
+        <aside className="w-72 border-l border-white/5 bg-[#0a0d14] flex flex-col shrink-0">
+          <div className="p-4 border-b border-white/5 flex items-center justify-between">
+            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-hebrew">רשימת מעקב</span>
+            <button onClick={addToWatchlist} className="text-slate-500 hover:text-white transition-colors">
+                <Plus size={14} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            {watchlist.map(s => (
+              <div 
+                key={s}
+                onClick={() => setTicker(s)}
+                className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${ticker === s ? 'bg-blue-600/10 border border-blue-500/20' : 'hover:bg-white/5 border border-transparent'}`}
+              >
+                <span className={`font-bold text-sm ${ticker === s ? 'text-white' : 'text-slate-400'}`}>{s}</span>
+                <div className="flex items-center gap-2">
+                  <ChevronRight size={14} className={ticker === s ? 'text-blue-500' : 'text-slate-700'} />
+                  <button onClick={(e) => removeFromWatchlist(s, e)} className="text-slate-700 hover:text-rose-500">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="p-4 border-t border-white/5">
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 flex gap-2">
+              <AlertTriangle size={14} className="text-amber-500 shrink-0" />
+              <p className="text-[9px] text-amber-200/50 leading-tight rtl text-right font-hebrew">אין לראות במידע זה ייעוץ פיננסי או המלצה להשקעה בניירות ערך.</p>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      <footer className="h-6 bg-[#0a0d14] border-t border-white/5 px-6 flex items-center justify-between text-[9px] font-bold text-slate-600 tracking-widest uppercase">
+        <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1 font-hebrew">
+                <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse"></div>
+                מערכת פעילה
+            </div>
+            <span>DATA: {isSimulated ? 'DELAYED_MOCK' : 'REALTIME_FEED'}</span>
+        </div>
+        <div>QUANTA PRO TERMINAL v2.3</div>
+      </footer>
+    </div>
+  );
+};
+
+export default App;
